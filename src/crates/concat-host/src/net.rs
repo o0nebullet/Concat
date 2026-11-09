@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah
 
 //! The one way the host reaches the network: models, sounds, update checks
 //! and the manifests that vouch for a download all go through [`get`],
@@ -386,9 +386,12 @@ mod tests {
             .and_then(|listener| listener.local_addr())
             .expect("a port")
             .port();
+        // Windows retries a refused connect twice, half a second and a
+        // second apart, before it says so; a two-second connect timeout ran
+        // out first there and called it a timeout.
         let failure = get(
             &format!("http://127.0.0.1:{port}/model.bin"),
-            Duration::from_secs(2),
+            Duration::from_secs(10),
             Duration::from_secs(2),
             Trust::System,
             &|request| request,

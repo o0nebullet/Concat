@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah
 
 //! The activity's entry point. android-activity calls `android_main` on
 //! its own thread once the activity is up; Slint's backend takes the
@@ -112,9 +112,9 @@ mod java {
     use jni::{Env, JavaVM, jni_sig, jni_str};
     use slint::android::AndroidApp;
 
-    /// The classes build.rs compiled: org.standalones.concat.ConcatFiles.
+    /// The classes build.rs compiled: app.concat.editor.ConcatFiles.
     const DEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/classes.dex"));
-    const CLASS_NAME: &str = "org.standalones.concat.ConcatFiles";
+    const CLASS_NAME: &str = "app.concat.editor.ConcatFiles";
 
     /// The fragment class, loaded once and kept.
     static CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
@@ -508,6 +508,34 @@ mod links {
     }
 }
 
+/// The screen kept on while a job runs - an export, a transcription, a
+/// download - so a phone left on the table does not time out half a
+/// minute in and stop the export with it (#695). The window's flag, which
+/// the activity applies on its own thread.
+#[cfg(target_os = "android")]
+mod awake {
+    use slint::android::AndroidApp;
+    use slint::android::android_activity::WindowManagerFlags;
+
+    pub fn install(app: &AndroidApp) {
+        let app = app.clone();
+        concat::install_awake(Box::new(move |on| {
+            log::info!("screen kept on while a job runs: {on}");
+            if on {
+                app.set_window_flags(
+                    WindowManagerFlags::KEEP_SCREEN_ON,
+                    WindowManagerFlags::empty(),
+                );
+            } else {
+                app.set_window_flags(
+                    WindowManagerFlags::empty(),
+                    WindowManagerFlags::KEEP_SCREEN_ON,
+                );
+            }
+        }));
+    }
+}
+
 /// Called by the activity's native glue; the name is the contract.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
@@ -525,6 +553,7 @@ fn android_main(app: slint::android::AndroidApp) {
     publisher::install(&app);
     microphone::install(&app);
     links::install(&app);
+    awake::install(&app);
     if let Err(error) = concat::run() {
         log::error!("{error}");
     }

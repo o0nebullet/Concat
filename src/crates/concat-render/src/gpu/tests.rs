@@ -156,7 +156,10 @@ fn a_see_through_canvas_keeps_the_alpha_of_what_covers_it() {
     });
     let pixel = frame.pixel(4, 2).expect("a pixel");
     assert!(pixel[3].abs_diff(128) <= 1, "{pixel:?}");
-    assert!(pixel[0].abs_diff(200) <= 2 && pixel[1].abs_diff(40) <= 2, "{pixel:?}");
+    assert!(
+        pixel[0].abs_diff(200) <= 2 && pixel[1].abs_diff(40) <= 2,
+        "{pixel:?}"
+    );
 
     // And an opaque canvas after it is opaque again.
     let frame = gpu.render(&FramePlan::empty(4, 4));
@@ -168,7 +171,12 @@ fn a_see_through_canvas_keeps_the_alpha_of_what_covers_it() {
 #[test]
 fn an_empty_frame_is_the_canvas_colour() {
     let Some(mut gpu) = gpu() else { return };
-    for canvas in [[0, 177, 64, 255], [255, 255, 255, 255], [0, 71, 187, 255], [31, 31, 31, 255]] {
+    for canvas in [
+        [0, 177, 64, 255],
+        [255, 255, 255, 255],
+        [0, 71, 187, 255],
+        [31, 31, 31, 255],
+    ] {
         let frame = gpu.render(&FramePlan {
             canvas,
             ..FramePlan::empty(4, 4)
@@ -783,6 +791,71 @@ fn every_shader_package_renders_at_its_defaults() {
         let out = gpu.render(&plan(4, 4, vec![treated]));
         assert_eq!(out.pixels().len(), 4 * 4 * 4, "{}", package.id());
     }
+}
+
+/// Every built-in effect's pipeline is one the driver takes - on whatever
+/// adapter there is, software included. The test above is skipped on a
+/// software adapter, which left Windows CI's WARP, the one runner whose
+/// Direct3D 12 compiles with FXC, never building a package: halation
+/// shipped in 0.2.9 refused by FXC, and its Library card took the
+/// preview down with it (#673). A sixteen-pixel trial is cheap anywhere.
+#[test]
+fn every_shader_package_builds_on_this_adapter() {
+    // wgpu's own words - an uncaught error, a lost device's reason - go to
+    // the log; without a logger the failure said only "Validation Error".
+    struct Stderr;
+    impl log::Log for Stderr {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!("{} {}: {}", record.level(), record.target(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    let _ = log::set_logger(&Stderr).map(|()| log::set_max_level(log::LevelFilter::Warn));
+
+    let Some(mut gpu) = gpu() else { return };
+    let canary = package("test.canary", INVERT, "", &[], 1.0);
+    let catalogue = concat_effects::Catalogue::builtin();
+    let mut refused = Vec::new();
+    for package in catalogue.packages() {
+        let Some(shader) = package.shader() else {
+            continue;
+        };
+        let values = package.resolve(&Default::default());
+        let pass = shader.pass(
+            &values,
+            &package.manifest.params,
+            1.0,
+            package.lut().cloned(),
+            None,
+        );
+        if let Err(error) = gpu.trial(&pass, std::time::Duration::from_secs(60)) {
+            refused.push(format!("{}: {error}", package.id()));
+        }
+        // A pass that leaves the device unusable fails every one after it,
+        // each with an error that is not its own: name the one it was, and
+        // go on with a fresh device so the rest are judged for themselves.
+        if let Err(error) = gpu.trial(&canary, std::time::Duration::from_secs(60)) {
+            refused.push(format!(
+                "{}: the device was unusable after it ({error})",
+                package.id()
+            ));
+            let Some(fresh) = WgpuCompositor::new() else {
+                break;
+            };
+            gpu = fresh;
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "refused on {:?}:\n{}",
+        gpu.adapter_info().backend,
+        refused.join("\n")
+    );
 }
 
 /// A pass reads how long its own clip has been on screen through
@@ -2415,4 +2488,125 @@ fn a_background_is_wiped_with_its_picture() {
         Some([0, 0, 0, 255]),
         "the edge is the picture's"
     );
+}
+
+/// `CONCAT_GPU_BUDGET` lifts the gates for a driver that misreads its
+/// budget, moves them to a percent, and leaves anything else alone.
+#[test]
+fn the_budget_override_reads_off_and_a_percent_and_refuses_the_rest() {
+    let off = super::parse_budget(" OFF ").expect("off");
+    assert_eq!(
+        (off.for_resource_creation, off.for_device_loss),
+        (None, None)
+    );
+    let at = super::parse_budget("90").expect("90");
+    assert_eq!(
+        (at.for_resource_creation, at.for_device_loss),
+        (Some(90), Some(94))
+    );
+    let top = super::parse_budget("98%").expect("98%");
+    assert_eq!(
+        (top.for_resource_creation, top.for_device_loss),
+        (Some(98), Some(99))
+    );
+    assert!(super::parse_budget("100").is_none());
+    assert!(super::parse_budget("lots").is_none());
+}
+
+/// Chroma Key, the one package of more than two passes, leaves Windows
+/// CI's WARP device lost after it (#673), and taking out its finder's
+/// `continue` did not change that. This trial names the part that does
+/// it: the package with each stage's function stubbed out, with every one
+/// stubbed but one, and with all of them stubbed - the last a trial of the
+/// seven-picture plumbing alone. Each runs on a fresh device. Diagnostic:
+/// it goes once the cause is fixed.
+#[test]
+fn chroma_key_bisected_on_this_adapter() {
+    const MANIFEST: &str =
+        include_str!("../../../concat-effects/packages/concat.chroma-key/effect.toml");
+    const BODY: &str =
+        include_str!("../../../concat-effects/packages/concat.chroma-key/effect.wgsl");
+    const STAGES: [&str; 8] = [
+        "cells",
+        "backing",
+        "plate",
+        "matte",
+        "grow_across",
+        "grow_down",
+        "soften_across",
+        "effect",
+    ];
+    // `name`'s function renamed out of the way and a constant in its place;
+    // `effect` passes the layer through.
+    let stub = |body: &str, name: &str| {
+        let head = format!("fn {name}(uv: vec2<f32>) -> vec4<f32> {{");
+        assert!(body.contains(&head), "{name} is in the shader");
+        // A stub still reads every picture drawn before it, at no weight:
+        // the compiler refuses a pass whose picture no later pass reads.
+        let earlier: String = STAGES
+            .iter()
+            .take_while(|stage| **stage != name)
+            .map(|stage| format!(" + 0.0 * {stage}_at(uv)"))
+            .collect();
+        let value = if name == "effect" {
+            format!("sample(uv){earlier}")
+        } else {
+            format!("vec4<f32>(0.5){earlier}")
+        };
+        body.replace(
+            &head,
+            &format!(
+                "fn {name}(uv: vec2<f32>) -> vec4<f32> {{ return {value}; }}\nfn {name}_whole(uv: vec2<f32>) -> vec4<f32> {{"
+            ),
+        )
+    };
+    let mut variants: Vec<(String, String)> = vec![("whole".to_owned(), BODY.to_owned())];
+    for name in STAGES {
+        variants.push((format!("without {name}"), stub(BODY, name)));
+        let only = STAGES
+            .iter()
+            .filter(|other| **other != name)
+            .fold(BODY.to_owned(), |body, other| stub(&body, other));
+        variants.push((format!("only {name}"), only));
+    }
+    variants.push((
+        "all stubbed".to_owned(),
+        STAGES
+            .iter()
+            .fold(BODY.to_owned(), |body, name| stub(&body, name)),
+    ));
+
+    let canary = package("test.canary", INVERT, "", &[], 1.0);
+    let mut verdicts = Vec::new();
+    let mut deaths = 0;
+    for (index, (label, body)) in variants.iter().enumerate() {
+        let manifest = MANIFEST.replace(
+            "id = \"concat.chroma-key\"",
+            &format!("id = \"test.chroma-key-{index}\""),
+        );
+        let package = concat_effects::Package::from_sources(&manifest, None, Some(body))
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+        let shader = package.shader().expect("a shader");
+        let values = package.resolve(&Default::default());
+        let pass = shader.pass(&values, &package.manifest.params, 1.0, None, None);
+        let Some(mut gpu) = WgpuCompositor::new() else {
+            eprintln!("no usable GPU adapter; skipping");
+            return;
+        };
+        let drawn = gpu.trial(&pass, std::time::Duration::from_secs(60));
+        let after = gpu.trial(&canary, std::time::Duration::from_secs(60));
+        if after.is_err() {
+            deaths += 1;
+        }
+        verdicts.push(format!(
+            "{label}: {} / {}",
+            drawn.map_or_else(|e| format!("refused ({e})"), |()| "drew".to_owned()),
+            after.map_or_else(
+                |e| format!("DEVICE LOST ({e})"),
+                |()| "device fine".to_owned()
+            ),
+        ));
+    }
+    eprintln!("chroma key, bisected:\n{}", verdicts.join("\n"));
+    assert_eq!(deaths, 0, "chroma key, bisected:\n{}", verdicts.join("\n"));
 }

@@ -76,6 +76,26 @@ pub fn flatten_timeline_in(
                 });
             }
 
+            // A transition placed as a clip (#621): no file, its package and
+            // knobs the one link of its chain, its length the clip's.
+            // `resolve_transitions` finds the cut beneath it, if any. One
+            // whose link is gone or switched off draws nothing.
+            if clip.kind == ModelClipKind::Transition {
+                let package = clip.video_effects.first()?;
+                return Some(ExportClip {
+                    hidden: !track.visible || !package.enabled,
+                    muted: true,
+                    volume: 0.0,
+                    has_audio: Some(false),
+                    transition: Some(TransitionSpec {
+                        kind: package.id.clone(),
+                        duration: clip.duration,
+                        params: package.params.clone(),
+                    }),
+                    ..ExportClip::blank(ClipKind::Transition, clip.start, clip.duration, index)
+                });
+            }
+
             // A sound layer: no file and no picture, a chain over the mix
             // for its span, its opacity the strength and its fades the
             // ramps, silent with its lane.
@@ -104,7 +124,8 @@ pub fn flatten_timeline_in(
                 ModelClipKind::Text
                 | ModelClipKind::Layer
                 | ModelClipKind::SoundLayer
-                | ModelClipKind::Shape => return None,
+                | ModelClipKind::Shape
+                | ModelClipKind::Transition => return None,
             };
             Some(ExportClip {
                 path: media.path.clone(),
@@ -183,6 +204,22 @@ pub fn flatten_timeline_in(
                     _ => String::new(),
                 },
                 stabilize: clip.stabilize.filter(|_| kind == ClipKind::Video),
+                voice: match (&clip.voice, project_dir) {
+                    (Some(mix), Some(dir)) if kind != ClipKind::Image => {
+                        let stems =
+                            crate::voice_stems_dir(dir, &media.path, clip.audio_stream, mix.kind);
+                        let (voice, rest) = (stems.join("voice.wav"), stems.join("rest.wav"));
+                        // Until both parts are there the clip plays as
+                        // recorded, and the host is making them.
+                        (voice.is_file() && rest.is_file()).then(|| crate::VoiceStems {
+                            voice: voice.to_string_lossy().into_owned(),
+                            rest: rest.to_string_lossy().into_owned(),
+                            voice_gain: mix.voice,
+                            rest_gain: mix.background,
+                        })
+                    }
+                    _ => None,
+                },
                 motion_dir: match (&clip.stabilize, project_dir) {
                     (Some(_), Some(dir)) if kind == ClipKind::Video => {
                         concat_vision::stabilize::motion_dir(dir, &media.path)

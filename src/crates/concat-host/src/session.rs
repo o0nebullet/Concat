@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah
 
 //! The engine-owned editing session.
 //!
@@ -32,6 +32,7 @@ pub struct Session {
 
 /// What every mutating call returns: the authoritative state plus history
 /// availability, so undo/redo affordances are never guessing.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorView {
@@ -50,6 +51,7 @@ pub struct EditorView {
 }
 
 /// The session's settings, as the window shows them.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
@@ -112,7 +114,9 @@ impl Session {
             let old = link.id.clone();
             let changed = catalogue.upgrade(link);
             let pair = (old, link.id.clone());
-            if changed && !upgraded.contains(&pair) {
+            // A link carried over to its own package's newer version opens
+            // as it looked, near enough, and says nothing.
+            if changed && pair.0 != pair.1 && !upgraded.contains(&pair) {
                 upgraded.push(pair);
             }
             changed

@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::projects;
 
 /// A video stream, as the UI sees it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoStreamInfo {
@@ -42,6 +43,7 @@ pub struct VideoStreamInfo {
 }
 
 /// An audio stream, as the UI sees it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioStreamInfo {
@@ -84,6 +86,7 @@ impl AudioStreamInfo {
 }
 
 /// What [`probe`] hands back.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaSummary {
@@ -996,6 +999,7 @@ mod tests {
                 cadence: concat_core::time::FrameRate::from_int(25),
                 color_range: None,
                 signal: Signal::Sdr,
+                keyframes: std::sync::Arc::from([]),
             }),
             audio: None,
             audio_streams: Vec::new(),

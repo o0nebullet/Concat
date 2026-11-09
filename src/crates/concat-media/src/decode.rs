@@ -729,7 +729,9 @@ impl Decoder {
         // https://github.com/jub0t/Concat/issues/429
         let (decoder, accelerated) = match (
             alpha_decoder(&stream),
-            options.hardware.device_for(codec, format),
+            options
+                .hardware
+                .device_for(codec, format, options.keyframes_only),
         ) {
             (Some(name), _) => match Self::open_codec(path, &stream, options, Codec::Named(name)) {
                 Ok((decoder, _)) => (decoder, None),
@@ -897,11 +899,20 @@ impl Decoder {
         // scrub waited 400 ms for its frame. Frame threads for that walk,
         // slice threads for files cut into slices; zero lets the codec
         // count, and a caller working in the background says how many.
+        // Keyframes only, no frame threads: they hold each picture back
+        // until every thread has a packet, and with the frames between
+        // skipped that is a keyframe a thread - the next ten of them read,
+        // and decoded, before the one sought came out. A scrub's keyframe
+        // of a 4K file with one every four seconds took up to 260 ms so.
         // SAFETY: the context is not opened yet, which is when threading is
         // set, and both fields are plain integers.
         unsafe {
             let raw = context.as_mut_ptr();
-            (*raw).thread_type = ffmpeg::sys::FF_THREAD_FRAME | ffmpeg::sys::FF_THREAD_SLICE;
+            (*raw).thread_type = if options.keyframes_only {
+                ffmpeg::sys::FF_THREAD_SLICE
+            } else {
+                ffmpeg::sys::FF_THREAD_FRAME | ffmpeg::sys::FF_THREAD_SLICE
+            };
             (*raw).thread_count = i32::from(options.threads);
         }
         let (accelerated, named) = match codec {
@@ -1964,15 +1975,22 @@ mod tests {
             threads: 0,
             software_only: false,
         };
-        let mut encoder = Encoder::create_tagged(
+        let encoder = Encoder::create_tagged(
             &path,
             64,
             64,
             FrameRate::THIRTY,
             &options,
             (Primaries::BT2020, Transfer::SMPTE2084, Space::BT2020NCL),
-        )
-        .expect("an HEVC encoder");
+        );
+        let mut encoder = match encoder {
+            Ok(encoder) => encoder,
+            Err(error) if VideoCodec::Hevc.ten_bit_only_on_hardware() => {
+                eprintln!("no ten-bit HEVC encoder opens here ({error}); skipped");
+                return;
+            }
+            Err(error) => panic!("an HEVC encoder: {error}"),
+        };
         let mut frame = Frame::black(64, 64);
         frame.fill([180, 180, 180, 255]);
         for _ in 0..3 {

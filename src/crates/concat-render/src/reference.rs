@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah
 
 //! The CPU compositor, kept for the tests alone: the reference the GPU
 //! compositor's parity suite holds it to, obvious and dependency-free. It
@@ -424,7 +424,10 @@ mod tests {
         });
         let pixel = frame.pixel(4, 2).expect("a pixel");
         assert!(pixel[3].abs_diff(128) <= 1, "{pixel:?}");
-        assert!(pixel[0].abs_diff(200) <= 1 && pixel[1].abs_diff(40) <= 1, "{pixel:?}");
+        assert!(
+            pixel[0].abs_diff(200) <= 1 && pixel[1].abs_diff(40) <= 1,
+            "{pixel:?}"
+        );
     }
 
     #[test]

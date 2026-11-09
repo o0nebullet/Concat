@@ -65,9 +65,9 @@ pub struct EnhanceRequest {
     pub media_path: String,
     /// A still: one frame in, one PNG out.
     pub still: bool,
-    /// How many times larger the copy is; see
-    /// [`concat_vision::enhance::factor_of`].
-    pub factor: u32,
+    /// How many times larger the copy is, 1 to 4 in hundredths; see
+    /// [`concat_vision::enhance::scale_of`].
+    pub scale: f32,
     /// How much of the model's answer is kept, 0 to 1; the rest is the
     /// original, enlarged plainly. See [`concat_vision::enhance::mix`].
     pub strength: f32,
@@ -88,8 +88,8 @@ pub struct PreviewRequest {
     pub media_path: String,
     /// Seconds into the file: the frame under the playhead. 0 for a still.
     pub seconds: f64,
-    /// How many times larger, as for [`EnhanceRequest::factor`].
-    pub factor: u32,
+    /// How many times larger, as for [`EnhanceRequest::scale`].
+    pub scale: f32,
 }
 
 /// One frame's middle, before and after: both at the enhanced size, so
@@ -144,7 +144,19 @@ pub struct Enhancers {
     model: Mutex<Option<Arc<Enhancer>>>,
 }
 
-/// Where the enhanced copy of `media` at `factor` and `strength` lives
+/// The scale as a copy's name says it: "2x" for a whole number, the name
+/// copies had before a scale could be anything else, and "1.50x" for the
+/// rest, to the hundredth the slider moves in.
+fn scale_name(scale: f32) -> String {
+    let hundredths = (scale * 100.0).round() as u32;
+    if hundredths.is_multiple_of(100) {
+        format!("{}x", hundredths / 100)
+    } else {
+        format!("{}.{:02}x", hundredths / 100, hundredths % 100)
+    }
+}
+
+/// Where the enhanced copy of `media` at `scale` and `strength` lives
 /// under `project`: in the cache, named by the file's path, size and
 /// modification time and by the settings. Full strength - all Enhance
 /// made before it had a strength - keeps the old name, so a copy made
@@ -156,7 +168,7 @@ pub struct Enhancers {
 pub fn target_for(
     project: &Path,
     media: &str,
-    factor: u32,
+    scale: f32,
     strength: f32,
     still: bool,
     span: Option<(f64, f64)>,
@@ -166,7 +178,11 @@ pub fn target_for(
     media.hash(&mut hasher);
     meta.len().hash(&mut hasher);
     if let Some((start, duration)) = span {
-        ((start * 1000.0).round() as u64, (duration * 1000.0).round() as u64).hash(&mut hasher);
+        (
+            (start * 1000.0).round() as u64,
+            (duration * 1000.0).round() as u64,
+        )
+            .hash(&mut hasher);
     }
     if let Ok(modified) = meta.modified()
         && let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH)
@@ -181,8 +197,9 @@ pub fn target_for(
         format!("-{percent}pc")
     };
     Some(project.join("cache").join(format!(
-        "enhance-{:016x}-{factor}x{strength}.{extension}",
-        hasher.finish()
+        "enhance-{:016x}-{}{strength}.{extension}",
+        hasher.finish(),
+        scale_name(scale)
     )))
 }
 
@@ -301,8 +318,8 @@ impl Enhancers {
         let frame = frame_at(&request.media_path, request.seconds)?;
         let (width, height) = (frame.width(), frame.height());
         let region =
-            vision::centre_region(width, height, request.factor, PREVIEW_WIDTH, PREVIEW_HEIGHT);
-        let (enhanced, times) = enhancer.enhance_region(&frame, region, request.factor)?;
+            vision::centre_region(width, height, request.scale, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        let (enhanced, times) = enhancer.enhance_region(&frame, region, request.scale)?;
         let plain = vision::resize(
             &vision::cut(&frame, region),
             enhanced.width(),
@@ -326,8 +343,9 @@ fn still(enhancer: &Enhancer, request: &EnhanceRequest) -> Result<(), String> {
         .next_frame()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("{} holds no picture", request.media_path))?;
+    let (width, height) = vision::size_at(frame.width(), frame.height(), request.scale);
     let enhanced = vision::mix(
-        enhancer.enhance(&frame, request.factor)?,
+        enhancer.enhance(&frame, width, height)?,
         &frame,
         request.strength,
     );
@@ -381,8 +399,7 @@ fn footage(
     let expected = (seconds * rate.fps().as_f64()).max(1.0);
     // Even sides, which the encoder wants: a stray pixel at the right or
     // bottom is cropped rather than the whole copy refused.
-    let width = (video.width * request.factor) & !1;
-    let height = (video.height * request.factor) & !1;
+    let (width, height) = vision::size_at(video.width, video.height, request.scale);
     if width == 0 || height == 0 {
         return Err("the picture is too small to enhance".to_owned());
     }
@@ -404,15 +421,15 @@ fn footage(
         &EncodeOptions {
             codec: VideoCodec::H264,
             // A copy the timeline reads for as long as the project lives:
-            // near-transparent quality, and the time it takes is spent in
-            // the model anyway.
+            // near-transparent quality, on the machine's own encoder as an
+            // export is, which leaves the CPU to the model.
             preset: "medium".to_owned(),
             crf: 16,
             rate_mode: RateMode::Vbr,
             bitrate_kbps: 0,
             ten_bit: false,
             color_range: concat_media::ColorRange::Limited,
-            hardware: false,
+            hardware: true,
             threads: 2,
             software_only: false,
         },
@@ -457,7 +474,7 @@ fn footage(
                     answer.clone()
                 }
                 _ => {
-                    let model = enhancer.enhance(&frame, request.factor)?;
+                    let model = enhancer.enhance(&frame, width, height)?;
                     lap(1, &mut t);
                     let enhanced = vision::mix(model, &frame, request.strength);
                     lap(2, &mut t);
@@ -508,6 +525,7 @@ fn footage(
                     duration,
                     source_start: start,
                     speed: 1.0,
+                    tempo: Vec::new(),
                     preserve_pitch: true,
                     volume: 1.0,
                     volume_curve: concat_core::animate::Track::new(Vec::new()),
@@ -622,7 +640,7 @@ fn window_seconds(enhancer: &Enhancer) -> f64 {
     let mut best = f64::INFINITY;
     for run in 0..3 {
         let started = std::time::Instant::now();
-        if enhancer.enhance_region(&frame, region, 1).is_err() {
+        if enhancer.enhance_region(&frame, region, 1.0).is_err() {
             return f64::INFINITY;
         }
         if run > 0 {
@@ -662,7 +680,11 @@ fn on_gpu(file: &Path) -> Option<Enhancer> {
         concat_render::upscale::Upscaler::new(&layers, net.scale as u32, vision::WINDOW)?;
     log::info!(
         "enhance: on the GPU{}",
-        if upscaler.half() { ", in half floats" } else { "" }
+        if upscaler.half() {
+            ", in half floats"
+        } else {
+            ""
+        }
     );
     Some(Enhancer::with(Box::new(GpuWindows(upscaler))))
 }
@@ -685,13 +707,15 @@ mod tests {
     /// it. Needs the fetched model and ffmpeg on the path.
     #[test]
     fn a_span_is_enhanced_on_its_own() {
-        let Some(data) = ["org.standalones.concat", "app.concat.editor"]
+        let Some(data) = ["app.concat.editor", "org.standalones.concat"]
             .iter()
             .filter_map(|id| {
                 let p = PathBuf::from(std::env::var_os("HOME")?)
                     .join("Library/Application Support")
                     .join(id);
-                p.join("cutout-models/realesr-general-x4v3.onnx").is_file().then_some(p)
+                p.join("cutout-models/realesr-general-x4v3.onnx")
+                    .is_file()
+                    .then_some(p)
             })
             .next()
         else {
@@ -704,9 +728,22 @@ mod tests {
         // Four seconds whose frame number is drawn on it, with a tone.
         let made = std::process::Command::new("ffmpeg")
             .args(["-y", "-v", "error"])
-            .args(["-f", "lavfi", "-i", "testsrc2=size=160x96:rate=10:duration=4"])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x96:rate=10:duration=4",
+            ])
             .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
-            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+            .args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ])
             .arg(&clip)
             .status();
         if !made.is_ok_and(|status| status.success()) {
@@ -718,7 +755,7 @@ mod tests {
         let request = EnhanceRequest {
             media_path: clip.to_string_lossy().into_owned(),
             still: false,
-            factor: 2,
+            scale: 2.0,
             strength: 1.0,
             target: target.clone(),
             span: Some((1.0, 1.5)),
@@ -750,7 +787,10 @@ mod tests {
             .map(|(a, b)| f64::from(a.abs_diff(*b)))
             .sum::<f64>()
             / first.pixels().len() as f64;
-        assert!(off < off_wrong, "starts at one second: {off} against {off_wrong}");
+        assert!(
+            off < off_wrong,
+            "starts at one second: {off} against {off_wrong}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -762,18 +802,30 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let clip = dir.join("clip.mp4");
         let made = std::process::Command::new("ffmpeg")
-            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=1"])
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1920x1080:rate=30:duration=1",
+            ])
             .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
             .arg(&clip)
             .status();
         if !made.is_ok_and(|s| s.success()) {
             return;
         }
-        let data = ["org.standalones.concat", "app.concat.editor"]
+        let data = ["app.concat.editor", "org.standalones.concat"]
             .iter()
             .filter_map(|id| {
-                let p = PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support").join(id);
-                p.join("cutout-models/realesr-general-x4v3.onnx").is_file().then_some(p)
+                let p = PathBuf::from(std::env::var_os("HOME")?)
+                    .join("Library/Application Support")
+                    .join(id);
+                p.join("cutout-models/realesr-general-x4v3.onnx")
+                    .is_file()
+                    .then_some(p)
             })
             .next()
             .expect("the model");
@@ -783,7 +835,7 @@ mod tests {
         let request = EnhanceRequest {
             media_path: clip.to_string_lossy().into_owned(),
             still: false,
-            factor: 2,
+            scale: 2.0,
             strength: 0.8,
             target,
             span: None,
@@ -800,7 +852,7 @@ mod tests {
     /// GPU working in half floats. Needs the fetched model and a GPU.
     #[test]
     fn the_gpu_enhances_as_onnx_runtime_does() {
-        let Some(file) = ["org.standalones.concat", "app.concat.editor"]
+        let Some(file) = ["app.concat.editor", "org.standalones.concat"]
             .iter()
             .filter_map(|id| {
                 let home = std::env::var_os("HOME")?;
@@ -825,12 +877,18 @@ mod tests {
         let pixels: Vec<u8> = (0..width * height)
             .flat_map(|at| {
                 let (x, y) = (at % width, at / width);
-                [(x * 255 / width) as u8, (y * 2) as u8, ((x ^ y) & 0xff) as u8, 255]
+                [
+                    (x * 255 / width) as u8,
+                    (y * 2) as u8,
+                    ((x ^ y) & 0xff) as u8,
+                    255,
+                ]
             })
             .collect();
         let frame = Frame::from_rgba(width, height, pixels).expect("a frame");
-        let a = gpu.enhance(&frame, 2).expect("the GPU enhances");
-        let b = cpu.enhance(&frame, 2).expect("the CPU enhances");
+        let (w2, h2) = (frame.width() * 2, frame.height() * 2);
+        let a = gpu.enhance(&frame, w2, h2).expect("the GPU enhances");
+        let b = cpu.enhance(&frame, w2, h2).expect("the CPU enhances");
         assert_eq!((a.width(), a.height()), (b.width(), b.height()));
         let diffs: Vec<u32> = a
             .pixels()
@@ -854,24 +912,24 @@ mod tests {
         let project = dir.join("project");
         // Full strength keeps the name Enhance gave copies before it had
         // one, so those are found again.
-        let two = target_for(&project, &media, 2, 1.0, false, None).expect("named");
+        let two = target_for(&project, &media, 2.0, 1.0, false, None).expect("named");
         assert!(two.starts_with(project.join("cache")));
         assert!(two.to_string_lossy().ends_with("-2x.mp4"), "{two:?}");
         assert_eq!(
-            target_for(&project, &media, 2, 1.0, false, None),
+            target_for(&project, &media, 2.0, 1.0, false, None),
             Some(two.clone())
         );
         assert_ne!(
-            target_for(&project, &media, 1, 1.0, false, None),
+            target_for(&project, &media, 1.0, 1.0, false, None),
             Some(two.clone())
         );
-        let still = target_for(&project, &media, 2, 1.0, true, None).expect("named");
+        let still = target_for(&project, &media, 2.0, 1.0, true, None).expect("named");
         assert!(still.to_string_lossy().ends_with("-2x.png"), "{still:?}");
         assert_eq!(
             target_for(
                 &project,
                 &dir.join("gone.mp4").to_string_lossy(),
-                2,
+                2.0,
                 1.0,
                 false,
                 None
@@ -880,20 +938,32 @@ mod tests {
         );
         // Another strength is another copy, keyed by its whole percent so
         // a slider's float noise is not.
-        let blended = target_for(&project, &media, 2, 0.75, false, None).expect("named");
+        let blended = target_for(&project, &media, 2.0, 0.75, false, None).expect("named");
         assert!(
             blended.to_string_lossy().ends_with("-2x-75pc.mp4"),
             "{blended:?}"
         );
         assert_ne!(blended, two);
         assert_eq!(
-            target_for(&project, &media, 2, 0.750_001, false, None),
+            target_for(&project, &media, 2.0, 0.750_001, false, None),
             Some(blended.clone())
         );
-        assert_ne!(target_for(&project, &media, 4, 0.75, false, None), Some(blended));
+        assert_ne!(
+            target_for(&project, &media, 4.0, 0.75, false, None),
+            Some(blended)
+        );
+        // A scale off the whole numbers is named to the hundredth.
+        let between = target_for(&project, &media, 1.5, 1.0, false, None).expect("named");
+        assert!(
+            between.to_string_lossy().ends_with("-1.50x.mp4"),
+            "{between:?}"
+        );
         // A file with different bytes is a different copy.
         std::fs::write(&media, b"not really, but longer").expect("write");
-        assert_ne!(target_for(&project, &media, 2, 1.0, false, None), Some(two));
+        assert_ne!(
+            target_for(&project, &media, 2.0, 1.0, false, None),
+            Some(two)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

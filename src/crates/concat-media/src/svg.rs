@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah
 
 //! SVG, which FFmpeg cannot draw.
 //!
@@ -171,7 +171,11 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".part"))
             .filter(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let stem = drawings[0].file_stem().unwrap().to_string_lossy().into_owned();
+                let stem = drawings[0]
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
                 name.starts_with(&stem)
             })
             .count();

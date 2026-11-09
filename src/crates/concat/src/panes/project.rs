@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah
 
 //! The project sheet: the Details panel's Modify button, as a form.
 
@@ -184,7 +184,12 @@ impl ProjectPane {
                 .iter()
                 .position(|space| *space == self.color_space)
                 .unwrap_or(0) as i32,
-            canvas: slint::Color::from_argb_u8(self.canvas[3], self.canvas[0], self.canvas[1], self.canvas[2]),
+            canvas: slint::Color::from_argb_u8(
+                self.canvas[3],
+                self.canvas[0],
+                self.canvas[1],
+                self.canvas[2],
+            ),
         }
     }
 }

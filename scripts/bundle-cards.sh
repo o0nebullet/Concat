@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+# SPDX-FileCopyrightText: 2026 Jareer Abdullah
 #
 # Copies the effect cards a run of Concat drew on a real GPU into
 # src/crates/concat/cards/, one <package id>.jpg each, which the binary
@@ -14,9 +14,9 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/src/crates/concat/cards"
 case "$(uname -s)" in
-  Darwin) default="$HOME/Library/Application Support/org.standalones.concat/cards" ;;
-  Linux) default="${XDG_DATA_HOME:-$HOME/.local/share}/org.standalones.concat/cards" ;;
-  *) default="${LOCALAPPDATA:-}/org.standalones.concat/cards" ;;
+  Darwin) default="$HOME/Library/Application Support/app.concat.editor/cards" ;;
+  Linux) default="${XDG_DATA_HOME:-$HOME/.local/share}/app.concat.editor/cards" ;;
+  *) default="${LOCALAPPDATA:-}/app.concat.editor/cards" ;;
 esac
 from="${1:-$default}"
 [ -d "$from" ] || { echo "no card folder at $from" >&2; exit 1; }

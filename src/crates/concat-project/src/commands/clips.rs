@@ -248,6 +248,49 @@ pub(super) fn apply(
             })
         }
 
+        Command::AddTransitionClip {
+            track_id,
+            start,
+            duration,
+            transition_id,
+            name,
+        } => {
+            let duration = duration
+                .unwrap_or(DEFAULT_TRANSITION_DURATION)
+                .max(crate::model::ranges::MIN_TRANSITION);
+            let timeline = project.active_mut();
+            let track_id = match track_id {
+                Some(id) if timeline.track(&id).is_some() => id,
+                Some(_) => return Err(CommandError::TrackGone),
+                // Over the picture, as a layer is: a transition acts on what
+                // is beneath it, and one under the footage would act on
+                // nothing.
+                None => first_free_track_above(timeline, start, duration)
+                    .unwrap_or_else(|| fresh_track(timeline, mint)),
+            };
+            let start = timeline.nearest_free_start(&track_id, start, duration, &[]);
+            let id = mint.next("c");
+            let name = if name.trim().is_empty() {
+                transition_id.clone()
+            } else {
+                name
+            };
+            let mut clip = Clip::blank(
+                id.clone(),
+                track_id,
+                ClipKind::Transition,
+                name,
+                start,
+                duration,
+            );
+            clip.video_effects = vec![AppliedFilter::new(transition_id)];
+            timeline.clips.push(Arc::new(clip));
+            Ok(Outcome {
+                created_id: Some(id),
+                applied: true,
+            })
+        }
+
         Command::MoveClips { moves } => {
             let timeline = project.active_mut();
             // Onto another clip is never where a move lands: the group goes
@@ -1041,9 +1084,9 @@ fn first_free_track_above(timeline: &Timeline, start: f64, duration: f64) -> Opt
 /// Which side of the playhead [`delete_to_playhead`] takes away.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlayheadSide {
-    /// From the clip's start up to the playhead: CapCut's Delete Left (Q).
+    /// From the clip's start up to the playhead: Delete Left (Q).
     Left,
-    /// From the playhead to the clip's end: CapCut's Delete Right (W).
+    /// From the playhead to the clip's end: Delete Right (W).
     Right,
 }
 

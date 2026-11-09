@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah
 
 //! The media bin: the project's files as cards, filtered, sorted and
 //! selected.
@@ -56,7 +56,9 @@ pub enum MediaMsg {
     /// The phone's Add: what was picked, in the order it was picked, onto
     /// the main lane - at the playhead, or after the last picture on it
     /// when `at_end` (the lanes' plus).
-    AddPicked { at_end: bool },
+    AddPicked {
+        at_end: bool,
+    },
     /// The phone's Media sheet opened: a pick starts from nothing.
     ClearPicks,
 }
@@ -258,9 +260,7 @@ impl MediaBin {
     pub fn picked_in_order(&self, project: &Project) -> Vec<String> {
         let mut ids: Vec<String> = Vec::new();
         for id in &self.picked {
-            if self.selected.contains(id)
-                && !ids.contains(id)
-                && project.media_by_id(id).is_some()
+            if self.selected.contains(id) && !ids.contains(id) && project.media_by_id(id).is_some()
             {
                 ids.push(id.clone());
             }
@@ -274,7 +274,7 @@ impl MediaBin {
     }
 
     /// The phone's Add. Pictures go onto the main lane - the lowest one
-    /// holding a picture, CapCut's main track - inserted where the playhead
+    /// holding a picture, the main track - inserted where the playhead
     /// is (at the nearer edge of the clip under it, the rest of the lane
     /// moved along to make room) or after the lane's last clip, never past
     /// it into a gap; a timeline with no picture yet starts one. Anything
@@ -350,7 +350,9 @@ impl MediaBin {
             .iter()
             .filter(|clip| !before.contains(&clip.id))
             .map(|clip| clip.start + clip.duration)
-            .fold(None, |end: Option<f64>, at| Some(end.map_or(at, |end| end.max(at))));
+            .fold(None, |end: Option<f64>, at| {
+                Some(end.map_or(at, |end| end.max(at)))
+            });
         self.selected.clear();
         self.picked.clear();
         // A frame short of the end, so the monitor shows the last of what
